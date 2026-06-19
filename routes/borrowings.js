@@ -62,6 +62,15 @@ router.post('/', authenticate, async (req, res) => {
             return date.toISOString().split('T')[0];
         })();
         
+        // 🔥 VALIDASI BARU: Cegah tanggal deadline mundur melewati tanggal pinjam hari ini
+        if (final_due_date < borrow_date) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: `Gagal mencatat transaksi! Tanggal jatuh tempo (${final_due_date}) tidak boleh mendahului tanggal pinjam hari ini (${borrow_date}).`
+            });
+        }
+        
         // 4. Insert ke tabel borrowings
         const [borrowingResult] = await connection.query(
             `INSERT INTO borrowings (member_id, borrow_date, due_date, status) 
@@ -209,6 +218,9 @@ router.put('/:id/return', authenticate, async (req, res) => {
         // returned_books = array of { book_id, quantity, condition }
         // condition: 'good', 'damaged', 'lost'
         
+        // Konstanta tarif denda per hari per buku (Bisa lu sesuaikan nilainya)
+        const TARIF_DENDA_PER_HARI = 1000; 
+
         // 1. Cek peminjaman ada
         const [borrowings] = await connection.query(
             'SELECT * FROM borrowings WHERE id = ?', 
@@ -232,15 +244,36 @@ router.put('/:id/return', authenticate, async (req, res) => {
                 message: 'Buku sudah dikembalikan'
             });
         }
+
+        // ==================== LOGIKA HITUNG DENDA KETERLAMBATAN ====================
+        const today = new Date();
+        today.setHours(0, 0, 0, 0); // Reset jam ke 00:00 agar perhitungan murni berbasis hari
+
+        const dueDate = new Date(borrowing.due_date);
+        dueDate.setHours(0, 0, 0, 0);
+
+        let lateDays = 0;
+        // Jika hari ini sudah melewati batas jatuh tempo
+        if (today > dueDate) {
+            const diffTime = today.getTime() - dueDate.getTime();
+            lateDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); // Konversi milidetik ke jumlah hari
+        }
+        // ===========================================================================
         
+        let totalFineTransaction = 0; // Untuk kalkulasi total denda di response API
+
         // 2. Update borrowing_details + kembalikan stok
         for (const book of returned_books) {
-            // Update detail
+            // Hitung denda per buku: hari terlambat * tarif denda * jumlah buku yang dipinjam
+            const fineAmount = lateDays * TARIF_DENDA_PER_HARI * book.quantity;
+            totalFineTransaction += fineAmount;
+
+            // Update detail termasuk kolom fine_amount
             await connection.query(
                 `UPDATE borrowing_details 
-                 SET return_quantity = ?, book_condition = ? 
+                 SET return_quantity = ?, book_condition = ?, fine_amount = ? 
                  WHERE borrowing_id = ? AND book_id = ?`,
-                [book.quantity, book.condition || 'good', id, book.book_id]
+                [book.quantity, book.condition || 'good', fineAmount, id, book.book_id]
             );
             
             // Kembalikan stok (hanya jika kondisi baik)
@@ -252,7 +285,7 @@ router.put('/:id/return', authenticate, async (req, res) => {
             }
         }
         
-        // 3. Update status peminjaman
+        // 3. Update status peminjaman utama
         const return_date = new Date().toISOString().split('T')[0];
         await connection.query(
             `UPDATE borrowings 
@@ -263,12 +296,15 @@ router.put('/:id/return', authenticate, async (req, res) => {
         
         await connection.commit();
         
+        // Kembalikan data denda ke frontend agar bisa divalidasi langsung oleh admin
         res.json({
             success: true,
             message: 'Pengembalian buku berhasil diproses',
             data: {
                 borrowing_id: id,
                 return_date,
+                late_days: lateDays,
+                total_fine: totalFineTransaction,
                 returned_books
             }
         });
@@ -302,7 +338,7 @@ router.delete('/:id', authenticate, async (req, res) => {
             await connection.rollback();
             return res.status(404).json({
                 success: false,
-                message: 'Peminjaman tidak ditemukan'
+                message: 'Peminjaman tidak ditemukan atau sudah kosong'
             });
         }
         
@@ -314,14 +350,24 @@ router.delete('/:id', authenticate, async (req, res) => {
             );
         }
         
-        // 3. Hapus details (akan cascade) dan borrowing
-        await connection.query('DELETE FROM borrowings WHERE id = ?', [id]);
+        // 🔥 3. HAPUS MANUAL data anak di borrowing_details terlebih dahulu
+        // Langkah ini wajib ada untuk memutus hubungan Foreign Key sebelum induknya dihapus
+        await connection.query(
+            'DELETE FROM borrowing_details WHERE borrowing_id = ?', 
+            [id]
+        );
+        
+        // 🔥 4. Setelah tabel anak bersih, baru hapus data utama di borrowings
+        await connection.query(
+            'DELETE FROM borrowings WHERE id = ?', 
+            [id]
+        );
         
         await connection.commit();
         
         res.json({
             success: true,
-            message: 'Peminjaman dibatalkan dan stok dikembalikan'
+            message: 'Peminjaman dibatalkan, detail dihapus, dan stok berhasil dikembalikan'
         });
     } catch (error) {
         await connection.rollback();

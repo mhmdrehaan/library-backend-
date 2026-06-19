@@ -5,6 +5,7 @@ const booksRouter = require('./routes/books');
 const membersRouter = require('./routes/members');
 const authRouter = require('./routes/auth');
 const borrowingsRouter = require('./routes/borrowings');
+const returnRoutes = require('./routes/returns');
 require('dotenv').config();
 
 const app = express();
@@ -18,6 +19,8 @@ app.use('/api/books', booksRouter);
 app.use('/api/members', membersRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/borrowings', borrowingsRouter);
+app.use('/api/returns', returnRoutes);
+
 
 // Test endpoint
 app.get('/api/test-db', async (req, res) => {
