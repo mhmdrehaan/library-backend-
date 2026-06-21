@@ -6,6 +6,7 @@ const membersRouter = require('./routes/members');
 const authRouter = require('./routes/auth');
 const borrowingsRouter = require('./routes/borrowings');
 const returnRoutes = require('./routes/returns');
+const reportRoutes = require('./routes/reports');
 require('dotenv').config();
 
 const app = express();
@@ -20,6 +21,7 @@ app.use('/api/members', membersRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/borrowings', borrowingsRouter);
 app.use('/api/returns', returnRoutes);
+app.use('/api/reports', reportRoutes);
 
 
 // Test endpoint
